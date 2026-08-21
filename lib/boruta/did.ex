@@ -12,7 +12,9 @@ defmodule Boruta.Did do
       did_registrar_base_url: 0
     ]
 
+  alias Boruta.{ClientsAdapter, HttpClient}
   alias Boruta.Did.Crypto
+  alias Boruta.Oauth.Client
 
   @spec resolve(did :: String.t()) ::
           {:ok, did_document :: map()} | {:error, reason :: String.t()}
@@ -28,8 +30,7 @@ defmodule Boruta.Did do
   def resolve("did:ebsi" <> _key = did) do
     resolver_url = "#{ebsi_did_resolver_base_url()}/identifiers/#{encode_path_segment(did)}"
 
-    case Finch.build(:get, resolver_url)
-         |> Finch.request(OpenIDHttpClient) do
+    case http_get(resolver_url) do
       {:ok, %Finch.Response{body: body, status: 200}} ->
         case Jason.decode(body) do
           {:ok, %{"didDocument" => did_document}} ->
@@ -54,10 +55,9 @@ defmodule Boruta.Did do
     resolver_url = "#{did_resolver_base_url()}/identifiers/#{encode_path_segment(did)}"
 
     with {:ok, %Finch.Response{body: body, status: 200}} <-
-           Finch.build(:get, resolver_url, [
+           http_get(resolver_url, [
              {"Authorization", "Bearer #{universal_did_auth()[:token]}"}
-           ])
-           |> Finch.request(OpenIDHttpClient),
+           ]),
          {:ok, %{"didDocument" => did_document}} <- Jason.decode(body) do
       {:ok, did_document}
     else
@@ -100,16 +100,14 @@ defmodule Boruta.Did do
       })
 
     with {:ok, %Finch.Response{status: 201, body: body}} <-
-           Finch.build(
-             :post,
+           http_post(
              did_registrar_base_url() <> "/create?method=#{method}",
+             Jason.encode!(payload),
              [
                {"Authorization", "Bearer #{universal_did_auth()[:token]}"},
                {"Content-Type", "application/json"}
-             ],
-             Jason.encode!(payload)
-           )
-           |> Finch.request(OpenIDHttpClient),
+             ]
+           ),
          %{
            "didState" => %{
              "did" => did
@@ -126,6 +124,24 @@ defmodule Boruta.Did do
   @spec controller(did :: String.t() | nil) :: controller :: String.t() | nil
   def controller(nil), do: nil
   def controller(did), do: String.split(did, "#") |> List.first()
+
+  defp http_get(url, headers \\ []) do
+    with %Client{trusted_authorities: trusted_authorities, trusted_hosts: trusted_hosts} <-
+           ClientsAdapter.public!() do
+      HttpClient.get(url, headers, trusted_authorities, trusted_hosts)
+    else
+      _client -> {:error, "No public client configured."}
+    end
+  end
+
+  defp http_post(url, body, headers) do
+    with %Client{trusted_authorities: trusted_authorities, trusted_hosts: trusted_hosts} <-
+           ClientsAdapter.public!() do
+      HttpClient.post(url, body, headers, trusted_authorities, trusted_hosts)
+    else
+      _client -> {:error, "No public client configured."}
+    end
+  end
 
   defp encode_path_segment(value), do: value |> to_string() |> URI.encode(&URI.char_unreserved?/1)
 

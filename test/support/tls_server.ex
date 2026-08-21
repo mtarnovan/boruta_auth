@@ -9,9 +9,15 @@ defmodule Boruta.Support.TLSServer do
     def init(opts), do: opts
 
     def call(conn, opts) do
-      conn
-      |> put_resp_content_type(Keyword.get(opts, :content_type, "text/plain"))
-      |> send_resp(Keyword.get(opts, :status, 200), Keyword.fetch!(opts, :body))
+      case Keyword.get(opts, :request_handler) do
+        request_handler when is_function(request_handler, 1) ->
+          request_handler.(conn)
+
+        nil ->
+          conn
+          |> put_resp_content_type(Keyword.get(opts, :content_type, "text/plain"))
+          |> send_resp(Keyword.get(opts, :status, 200), Keyword.fetch!(opts, :body))
+      end
     end
   end
 

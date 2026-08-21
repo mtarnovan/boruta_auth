@@ -14,16 +14,43 @@ defmodule Boruta.HttpClient do
   def get(url, trusted_authorities \\ "", trusted_hosts \\ []) do
     trusted_hosts = add_issuer_host(trusted_hosts)
 
-    get_with_trust(url, trusted_authorities, trusted_hosts)
+    request_with_trust("GET", url, [], nil, trusted_authorities, trusted_hosts)
   end
 
-  defp get_with_trust(_url, "", []),
+  @spec get(
+          url :: String.t(),
+          headers :: Finch.Request.headers(),
+          trusted_authorities :: String.t(),
+          trusted_hosts :: list(String.t())
+        ) ::
+          {:ok, Finch.Response.t()} | {:error, term()}
+  def get(url, headers, trusted_authorities, trusted_hosts) do
+    trusted_hosts = add_issuer_host(trusted_hosts)
+
+    request_with_trust("GET", url, headers, nil, trusted_authorities, trusted_hosts)
+  end
+
+  @spec post(
+          url :: String.t(),
+          body :: Finch.Request.body(),
+          headers :: Finch.Request.headers(),
+          trusted_authorities :: String.t(),
+          trusted_hosts :: list(String.t())
+        ) ::
+          {:ok, Finch.Response.t()} | {:error, term()}
+  def post(url, body, headers \\ [], trusted_authorities \\ "", trusted_hosts \\ []) do
+    trusted_hosts = add_issuer_host(trusted_hosts)
+
+    request_with_trust("POST", url, headers, body, trusted_authorities, trusted_hosts)
+  end
+
+  defp request_with_trust(_method, _url, _headers, _body, "", []),
     do: {:error, "Client must configure trusted hosts or authorities for outbound requests."}
 
-  defp get_with_trust(url, trusted_authorities, trusted_hosts) do
+  defp request_with_trust(method, url, headers, body, trusted_authorities, trusted_hosts) do
     with {:ok, trusted_hosts} <- validate_trusted_hosts(url, trusted_hosts),
          {:ok, trusted_authorities} <- validate_trusted_authorities(trusted_authorities) do
-      trusted_get(url, trusted_hosts, trusted_authorities)
+      trusted_request(method, url, headers, body, trusted_hosts, trusted_authorities)
     end
   end
 
@@ -110,16 +137,24 @@ defmodule Boruta.HttpClient do
     end
   end
 
-  defp trusted_get(url, trusted_hosts, trusted_authorities) do
+  defp trusted_request(method, url, headers, body, trusted_hosts, trusted_authorities) do
     with {:ok, url, cacerts} <- get_cacerts(url, trusted_hosts, trusted_authorities),
-         {:https, host, port, path, _query} <- Finch.Request.parse_url(url) do
+         {:https, host, port, path, query} <- Finch.Request.parse_url(url) do
+      request_path = if query in [nil, ""], do: path, else: "#{path}?#{query}"
+
       with {:ok, conn} <-
              Mint.HTTP.connect(:https, host, port,
                transport_opts: [cacerts: cacerts],
                protocols: [:http1]
              ),
            {:ok, conn, request_ref} <-
-             Mint.HTTP.request(conn, "GET", path, [{"connection", "close"}], nil) do
+             Mint.HTTP.request(
+               conn,
+               method,
+               request_path,
+               [{"connection", "close"} | headers],
+               body
+             ) do
         receive_response(conn, request_ref, %{status: nil, headers: [], body: []})
       else
         {:error,

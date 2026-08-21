@@ -2,33 +2,79 @@ defmodule Boruta.Did.HttpTest do
   use ExUnit.Case, async: false
 
   alias Boruta.Did
+  alias Boruta.Oauth.Client
+  alias Boruta.Support.TLSServer
+
+  defmodule Clients do
+    @moduledoc false
+
+    def public!, do: Application.fetch_env!(:boruta, __MODULE__)
+  end
 
   setup do
-    bypass = Bypass.open()
+    {:ok, expectations} = Agent.start_link(fn -> [] end)
+
+    request_handler = fn conn ->
+      case Agent.get_and_update(expectations, fn
+             [expectation | expectations] -> {expectation, expectations}
+             [] -> {nil, []}
+           end) do
+        nil -> Plug.Conn.send_resp(conn, 500, "Unexpected request")
+        expectation -> expectation.(conn)
+      end
+    end
+
+    {:ok, server} = TLSServer.start("unused", request_handler: request_handler)
     original_config = Application.get_env(:boruta, Boruta.Oauth, [])
-    base_url = "http://localhost:#{bypass.port}"
+    original_client = Application.get_env(:boruta, Clients)
+
+    contexts =
+      original_config
+      |> Keyword.fetch!(:contexts)
+      |> Keyword.put(:clients, Clients)
 
     Application.put_env(
       :boruta,
       Boruta.Oauth,
       original_config
-      |> Keyword.put(:ebsi_did_resolver_base_url, base_url)
-      |> Keyword.put(:did_resolver_base_url, base_url)
-      |> Keyword.put(:did_registrar_base_url, base_url)
+      |> Keyword.put(:contexts, contexts)
+      |> Keyword.put(:ebsi_did_resolver_base_url, server.url)
+      |> Keyword.put(:did_resolver_base_url, server.url)
+      |> Keyword.put(:did_registrar_base_url, server.url)
       |> Keyword.put(:universal_did_auth, %{type: "bearer", token: "resolver-token"})
     )
 
-    on_exit(fn -> Application.put_env(:boruta, Boruta.Oauth, original_config) end)
+    Application.put_env(
+      :boruta,
+      Clients,
+      %Client{
+        id: "public",
+        trusted_authorities: server.trusted_authorities,
+        trusted_hosts: ["localhost"]
+      }
+    )
 
-    {:ok, bypass: bypass}
+    on_exit(fn ->
+      TLSServer.stop(server)
+      Application.put_env(:boruta, Boruta.Oauth, original_config)
+
+      if original_client do
+        Application.put_env(:boruta, Clients, original_client)
+      else
+        Application.delete_env(:boruta, Clients)
+      end
+    end)
+
+    {:ok, server: server, expectations: expectations}
   end
 
   describe "resolve/1 with an EBSI resolver" do
-    test "extracts a wrapped DID document", %{bypass: bypass} do
+    test "extracts a wrapped DID document", %{expectations: expectations} do
       did = "did:ebsi:test"
       document = %{"id" => did}
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
+        assert conn.method == "GET"
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         Plug.Conn.resp(conn, 200, Jason.encode!(%{"didDocument" => document}))
       end)
@@ -36,11 +82,11 @@ defmodule Boruta.Did.HttpTest do
       assert {:ok, ^document} = Did.resolve(did)
     end
 
-    test "accepts an unwrapped DID document", %{bypass: bypass} do
+    test "accepts an unwrapped DID document", %{expectations: expectations} do
       did = "did:ebsi:test"
       document = %{"id" => did, "verificationMethod" => []}
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         Plug.Conn.resp(conn, 200, Jason.encode!(document))
       end)
@@ -48,17 +94,17 @@ defmodule Boruta.Did.HttpTest do
       assert {:ok, ^document} = Did.resolve(did)
     end
 
-    test "returns decoding and HTTP errors", %{bypass: bypass} do
+    test "returns decoding and HTTP errors", %{expectations: expectations} do
       did = "did:ebsi:test"
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         Plug.Conn.resp(conn, 200, "not-json")
       end)
 
       assert {:error, %Jason.DecodeError{}} = Did.resolve(did)
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         Plug.Conn.resp(conn, 404, "not found")
       end)
@@ -66,8 +112,8 @@ defmodule Boruta.Did.HttpTest do
       assert {:error, "not found"} = Did.resolve(did)
     end
 
-    test "returns transport errors", %{bypass: bypass} do
-      Bypass.down(bypass)
+    test "returns transport errors", %{server: server} do
+      TLSServer.stop(server)
 
       assert {:error, error} = Did.resolve("did:ebsi:test")
       assert is_binary(error)
@@ -76,11 +122,13 @@ defmodule Boruta.Did.HttpTest do
   end
 
   describe "resolve/1 with a universal resolver" do
-    test "returns the DID document and sends resolver authorization", %{bypass: bypass} do
+    test "returns the DID document and sends resolver authorization", %{
+      expectations: expectations
+    } do
       did = "did:example:test"
       document = %{"id" => did}
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer resolver-token"]
         Plug.Conn.resp(conn, 200, Jason.encode!(%{"didDocument" => document}))
@@ -89,17 +137,19 @@ defmodule Boruta.Did.HttpTest do
       assert {:ok, ^document} = Did.resolve(did)
     end
 
-    test "returns HTTP, decoding, and unexpected response errors", %{bypass: bypass} do
+    test "returns HTTP, decoding, and unexpected response errors", %{
+      expectations: expectations
+    } do
       did = "did:example:test"
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         Plug.Conn.resp(conn, 503, "unavailable")
       end)
 
       assert {:error, "unavailable"} = Did.resolve(did)
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         Plug.Conn.resp(conn, 200, "not-json")
       end)
@@ -107,7 +157,7 @@ defmodule Boruta.Did.HttpTest do
       assert {:error, decode_error} = Did.resolve(did)
       assert decode_error =~ "Jason.DecodeError"
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         Plug.Conn.resp(conn, 200, Jason.encode!(%{"unexpected" => true}))
       end)
@@ -118,11 +168,13 @@ defmodule Boruta.Did.HttpTest do
   end
 
   describe "create/2 with a universal registrar" do
-    test "creates a DID and resolves its public JWK", %{bypass: bypass} do
+    test "creates a DID and resolves its public JWK", %{expectations: expectations} do
       did = "did:example:created"
       jwk = %{"kty" => "OKP", "crv" => "Ed25519", "x" => "public-key"}
 
-      Bypass.expect_once(bypass, "POST", "/create", fn conn ->
+      expect(expectations, fn conn ->
+        assert conn.method == "POST"
+        assert conn.request_path == "/create"
         assert conn.query_string == "method=key"
         assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer resolver-token"]
         assert Plug.Conn.get_req_header(conn, "content-type") == ["application/json"]
@@ -133,7 +185,8 @@ defmodule Boruta.Did.HttpTest do
         Plug.Conn.resp(conn, 201, Jason.encode!(%{"didState" => %{"did" => did}}))
       end)
 
-      Bypass.expect_once(bypass, "GET", "/identifiers/:did", fn conn ->
+      expect(expectations, fn conn ->
+        assert conn.method == "GET"
         assert conn.request_path == "/identifiers/#{encoded(did)}"
         document = %{"verificationMethod" => [%{"publicKeyJwk" => jwk}]}
         Plug.Conn.resp(conn, 200, Jason.encode!(%{"didDocument" => document}))
@@ -142,13 +195,17 @@ defmodule Boruta.Did.HttpTest do
       assert {:ok, ^did, ^jwk} = Did.create("key")
     end
 
-    test "returns a stable error when registration fails", %{bypass: bypass} do
-      Bypass.expect_once(bypass, "POST", "/create", fn conn ->
+    test "returns a stable error when registration fails", %{expectations: expectations} do
+      expect(expectations, fn conn ->
         Plug.Conn.resp(conn, 400, "invalid")
       end)
 
       assert {:error, "Could not create did."} = Did.create("key")
     end
+  end
+
+  defp expect(expectations, expectation) do
+    Agent.update(expectations, &(&1 ++ [expectation]))
   end
 
   defp encoded(value), do: URI.encode(value, &URI.char_unreserved?/1)

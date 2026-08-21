@@ -1,6 +1,8 @@
 defmodule Boruta.HttpClientTest do
   use ExUnit.Case
 
+  import Plug.Conn
+
   alias Boruta.HttpClient
   alias Boruta.Support.TLSServer
 
@@ -20,6 +22,42 @@ defmodule Boruta.HttpClientTest do
   } do
     assert {:ok, %Finch.Response{status: 200, body: "pinned"}} =
              HttpClient.get(url, trusted_authorities)
+  end
+
+  test "performs a POST request with body, headers, and query parameters" do
+    request_handler = fn conn ->
+      {:ok, body, conn} = read_body(conn)
+
+      response =
+        Jason.encode!(%{
+          method: conn.method,
+          path: conn.request_path,
+          query: conn.query_string,
+          body: body,
+          content_type: get_req_header(conn, "content-type")
+        })
+
+      send_resp(conn, 200, response)
+    end
+
+    {:ok, post_server} = TLSServer.start("unused", request_handler: request_handler)
+    on_exit(fn -> TLSServer.stop(post_server) end)
+
+    assert {:ok, %Finch.Response{status: 200, body: response}} =
+             HttpClient.post(
+               "#{post_server.url}/callback?state=expected",
+               ~s({"code":"value"}),
+               [{"content-type", "application/json"}],
+               post_server.trusted_authorities
+             )
+
+    assert Jason.decode!(response) == %{
+             "method" => "POST",
+             "path" => "/callback",
+             "query" => "state=expected",
+             "body" => ~s({"code":"value"}),
+             "content_type" => ["application/json"]
+           }
   end
 
   test "rejects the request when a different authority is pinned", %{
