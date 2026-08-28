@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `AuthorizeResponse` result expose an `Oauth.Token` struct instead of value
+- successful OAuth revocation callbacks receive the revoked token, or `nil` for an unknown token
 - oauth tokens value database field is now a text
 - token generator takes token type as parameter
 - credential presentations validation prefers jwk to kid
@@ -46,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `HS384` and `RS384` JWT client authentication algorithms
+- generated trusted authorities and trusted hosts migrations use non-null empty defaults
 - client refresh-token TTL validation
 - generated controller callback assigns
 - only include nonce claim in id_token when provided in auth request
@@ -68,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- require HTTPS and explicit client trust configuration for outbound request-object, JWKS, and status-list retrieval
+- require HTTPS and explicit client trust configuration for outbound request-object, JWKS, status-list, DID resolution and registration requests
 - validate JWT client assertion expiration
 - restrict dynamic client registration to an allowlist of public registration attributes and safer default grant types
 - avoid code chains replay attacks
