@@ -87,8 +87,9 @@ defmodule Boruta.OauthTest.RevokeTest do
         body_params: %{"token" => token.value},
         req_headers: [{"authorization", authorization_header}]
       }, ApplicationMock) do
-        {:revoke_success} ->
+        {:revoke_success, revoked_token} ->
           assert Boruta.AccessTokensAdapter.get_by(value: token.value).revoked_at
+          assert revoked_token.revoked_at
         _ -> assert false
       end
     end
@@ -103,8 +104,9 @@ defmodule Boruta.OauthTest.RevokeTest do
         body_params: %{"token" => token.refresh_token},
         req_headers: [{"authorization", authorization_header}]
       }, ApplicationMock) do
-        {:revoke_success} ->
+        {:revoke_success, revoked_token} ->
           assert Boruta.AccessTokensAdapter.get_by(value: token.value).revoked_at
+          assert revoked_token.revoked_at
         _ -> assert false
       end
     end
@@ -119,8 +121,9 @@ defmodule Boruta.OauthTest.RevokeTest do
         body_params: %{"token" => token.value, "token_type_hint" => "refresh_token"},
         req_headers: [{"authorization", authorization_header}]
       }, ApplicationMock) do
-        {:revoke_success} ->
+        {:revoke_success, revoked_token} ->
           assert Boruta.AccessTokensAdapter.get_by(value: token.value).revoked_at
+          assert revoked_token.revoked_at
         _ -> assert false
       end
     end
@@ -135,8 +138,9 @@ defmodule Boruta.OauthTest.RevokeTest do
         body_params: %{"token" => token.refresh_token, "token_type_hint" => "refresh_token"},
         req_headers: [{"authorization", authorization_header}]
       }, ApplicationMock) do
-        {:revoke_success} ->
+        {:revoke_success, revoked_token} ->
           assert Boruta.AccessTokensAdapter.get_by(value: token.value).revoked_at
+          assert revoked_token.revoked_at
         _ ->
           assert false
       end
@@ -159,8 +163,9 @@ defmodule Boruta.OauthTest.RevokeTest do
         body_params: %{"token" => agent_token.value},
         req_headers: [{"authorization", authorization_header}]
       }, ApplicationMock) do
-        {:revoke_success} ->
+        {:revoke_success, revoked_token} ->
           assert Boruta.AgentTokensAdapter.get_by(value: agent_token.value).revoked_at
+          assert revoked_token.revoked_at
         _ -> assert false
       end
     end
@@ -182,8 +187,9 @@ defmodule Boruta.OauthTest.RevokeTest do
         body_params: %{"token" => agent_token.refresh_token, "token_type_hint" => "refresh_token"},
         req_headers: [{"authorization", authorization_header}]
       }, ApplicationMock) do
-        {:revoke_success} ->
+        {:revoke_success, revoked_token} ->
           assert Boruta.AgentTokensAdapter.get_by(value: agent_token.value).revoked_at
+          assert revoked_token.revoked_at
         _ ->
           assert false
       end
@@ -192,7 +198,7 @@ defmodule Boruta.OauthTest.RevokeTest do
     test "returns success if token does not exist", %{client: client} do
       %{req_headers: [{"authorization", authorization_header}]} = using_basic_auth(client.id, client.secret)
 
-      assert {:revoke_success} = Oauth.revoke(%Plug.Conn{
+      assert {:revoke_success, nil} = Oauth.revoke(%Plug.Conn{
         body_params: %{"token" => "unknown_token"},
         req_headers: [{"authorization", authorization_header}]
       }, ApplicationMock)
@@ -200,11 +206,13 @@ defmodule Boruta.OauthTest.RevokeTest do
 
     test "revoke token if client has public revocation", %{public_revoke_client: client, token: token, resource_owner: resource_owner} do
       ResourceOwners
-      |> expect(:get_by, 2, fn(_params) -> {:ok, resource_owner} end)
+      |> expect(:get_by, 3, fn(_params) -> {:ok, resource_owner} end)
 
-      assert {:revoke_success} = Oauth.revoke(%Plug.Conn{
+      assert {:revoke_success, revoked_token} = Oauth.revoke(%Plug.Conn{
         body_params: %{"token" => token.value, "client_id" => client.id},
       }, ApplicationMock)
+      assert Boruta.AccessTokensAdapter.get_by(value: token.value).revoked_at
+      assert revoked_token.revoked_at
     end
   end
 

@@ -17,7 +17,7 @@ defmodule Boruta.Oauth.Revoke do
       :ok
   """
   @spec token(request :: RevokeRequest.t()) ::
-          :ok
+          {:ok, token :: Boruta.Oauth.Token.t() | nil}
           | {:error, error :: Boruta.Oauth.Error.t()}
           | {:error, error :: String.t()}
   def token(%RevokeRequest{
@@ -34,13 +34,11 @@ defmodule Boruta.Oauth.Revoke do
            ) do
       case token_adapter(token_type_hint, value) do
         {adapter, token} ->
-          with {:ok, _token} <- adapter.revoke(token) do
-            :ok
-          end
+          adapter.revoke(token)
 
         nil ->
           # return :ok even for unexisting tokens
-          :ok
+          {:ok, nil}
       end
     end
   end

@@ -262,8 +262,8 @@ defmodule Boruta.Oauth do
   @impl true
   def revoke(%Plug.Conn{} = conn, module) when is_atom(module) do
     with {:ok, request} <- Request.revoke_request(conn),
-         :ok <- Revoke.token(request) do
-      module.revoke_success(conn)
+         {:ok, token} <- Revoke.token(request) do
+      module.revoke_success(conn, token)
     else
       {:error, %Error{} = error} ->
         module.revoke_error(conn, error)
